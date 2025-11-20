@@ -15,9 +15,21 @@ bot = commands.Bot(command_prefix=PREFIX, intents=intents)
 async def on_ready():
     print(f"Logged in as {bot.user}")
 
-@bot.slash_command(name="ping", description="Проверка бота", guild_ids=guild_ids)
-async def ping(ctx):
-    await ctx.respond("ping!")
-    await ctx.send("Pong!")
+@bot.slash_command(name="member_join", description="Login in server", guild_ids=guild_ids)
+async def member_join_c(ctx):
+    user = ctx.author.mention
+    await ctx.respond(f"Welcom to our server {user}")
+    login_channel = discord.utils.get(ctx.guild.channels, name="welcome")
+    if login_channel and isinstance(login_channel, discord.TextChannel):
+        await login_channel.send(f"Welcome to our server, {user}!")
+    else:
+        await ctx.send("System channel 'welcome' not found!")
+
+@bot.event
+async def member_join(member):
+    login_channel = discord.utils.get(member.guild.channels, name="welcome")
+    if login_channel:
+        await login_channel.send(f"Welcome to our server, {member.mention}!")
+
 
 bot.run(TOKEN)
