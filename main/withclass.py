@@ -1,158 +1,224 @@
 import discord
-from discord import option
 from discord.ext import commands
-from discord.ext.commands import check
 import os
 from dotenv import load_dotenv
 import asyncio
-from discord.errors import CheckFailure
 
 load_dotenv()
 TOKEN = os.getenv("TOKEN")
-guild_ids=[1440996306251153440]
+
+guild_ids = [1440996306251153440]
 PREFIX = "/"
 
-intents = discord.Intents().all()
+intents = discord.Intents.all()
 bot = commands.Bot(command_prefix=PREFIX, intents=intents)
 
-class User:
-    def __init__(self, user_id, try_user_name, server_user_name: str, roles: list[str]):
-        self.user_id = user_id
-        self.try_user_name = try_user_name
-        self.server_user_name = server_user_name
-        self.roles = roles
 
-    def __str__(self):
-        return f"User({self.server_user_name})"
+# ===========================
+# ✅ ОСНОВНОЙ КЛАСС БОТА
+# ===========================
+class CollBot(commands.Bot):
+    def __init__(self):
+        super().__init__(command_prefix=PREFIX, intents=intents)
+        self.registered_slots = {}
+        self.active_timers = {}
 
-class CollManager:
-    def __init__(self, bot):
+
+bot = CollBot()
+
+
+# ===========================
+# ✅ КНОПКИ
+# ===========================
+class SlotView(discord.ui.View):
+    def __init__(self, bot: CollBot, message_id: int, max_slots: int):
+        super().__init__(timeout=None)
         self.bot = bot
+        self.message_id = message_id
 
-    async def create_channel(self, ctx, user: User, category_name: str):
-        guild = ctx.guild
-        category = discord.utils.get(guild.categories, name=category_name)
+        for i in range(1, max_slots + 1):
+            self.add_item(SlotButton(i))
 
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            user.try_user_name: discord.PermissionOverwrite(view_channel=True, send_messages=True),
-        }
+        self.add_item(CancelButton())
+        self.add_item(CloseButton())
 
-        if discord.utils.get(guild.channels, name=user.server_user_name):
-            await ctx.respond("❌ Канал с таким названием уже существует!")
-            return None
 
-        new_channel = await guild.create_text_channel(
-            name=user.server_user_name,
-            overwrites=overwrites,
-            category=category
+class SlotButton(discord.ui.Button):
+    def __init__(self, number: int):
+        super().__init__(
+            label=str(number),
+            style=discord.ButtonStyle.success,
+            custom_id=f"slot_{number}"
         )
-        await ctx.respond(f"✔ Канал создан: {new_channel.mention}")
-        return new_channel
+        self.number = number
 
-    async def delete_channel(self, channel, server_user_name):
-        await channel.send("Канал удалится через 3 секунды!")
-        await asyncio.sleep(3)
-        await channel.delete()
+    async def callback(self, interaction: discord.Interaction):
+        bot: CollBot = interaction.client
+        slots = bot.registered_slots.get(interaction.message.id)
 
-
-    async def run_coll_survey(self, ctx, channel):
-        answers = {}
-
-        def check(msg):
-            return msg.author == ctx.author and msg.channel == channel
-
-        # 1. Таймер
-        options_timer = ["12", "14", "16", "18", "20"]
-        await channel.send("Выберите вариант: `12`, `14`, `16`, `18`, `20`")
-
-        while True:
-            msg = await self.bot.wait_for("message", check=check)
-            ans = msg.content.lower()
-            if ans in options_timer:
-                answers["timer"] = ans
-                break
-            await channel.send("❌ Неверный вариант. Попробуйте снова.")
-
-        # 2. Где
-        options_where = ["Статик", "Авалон", "Роум"]
-        await channel.send("Выберите вариант: `Статик`, `Авалон`, `Роум`")
-
-        while True:
-            msg = await self.bot.wait_for("message", check=check)
-            ans = msg.content
-            if ans in options_where:
-                answers["where"] = ans
-                break
-            await channel.send("❌ Неверный вариант. Попробуйте снова.")
-
-        # 3. Сколько
-        options_how = ["5", "7", "10", "12", "15", "20"]
-        await channel.send("Выберите вариант: `5`, `7`, `10`, `12`, `15`, `20`")
-
-        while True:
-            msg = await self.bot.wait_for("message", check=check)
-            ans = msg.content
-            if ans in options_how:
-                answers["howmany"] = ans
-                break
-            await channel.send("❌ Неверный вариант. Попробуйте снова.")
-
-        await channel.send(f"Все ответы получены:\n{answers}")
-        return answers
-
-@bot.event
-async def on_ready():
-    print(f"Logged in as {bot.user}")
-
-@bot.event
-async def on_member_join(member):
-    system_channel = member.guild.system_channel
-    if system_channel:
-        await system_channel.send(f"Welcome to our server, {member.mention}!")
-        return
-
-@bot.event
-async def on_application_command_error(ctx, error):
-    if isinstance(error, discord.errors.CheckFailure):
-        print("error, pls comment this func")
-        return
-    raise error
-
-
-def has_role(role_name: str):
-    async def predicate(ctx):
-        role = discord.utils.get(ctx.author.roles, name=role_name)
-        return role is not None
-    return check(predicate)
-
-def in_category(category_name: str):
-    async def predicate(ctx):
-        if ctx.channel.category and ctx.channel.category.name == category_name:
-            return True
-        return False
-    return check(predicate)
-
-@bot.slash_command(name="create_coll", description="Создание колла", guild_ids=guild_ids)
-@has_role("User")
-@in_category("col")
-async def create_coll_c(ctx):
-
-        user = User(
-            user_id=ctx.author.id,
-            try_user_name=ctx.author,
-            server_user_name=ctx.author.display_name,
-            roles=[role.name for role in ctx.author.roles]
-        )
-
-        manage = CollManager(bot)
-        channel = await manage.create_channel(ctx, user,"col")
-        if channel is None:
+        if not slots:
+            await interaction.response.send_message("❌ Слоты не найдены!", ephemeral=True)
             return
 
-        await manage.run_coll_survey(ctx, channel)
+        user = interaction.user
 
-        await manage.delete_channel(channel, user.server_user_name)
+        if slots[self.number] is not None:
+            await interaction.response.send_message("❌ Это место уже занято!", ephemeral=True)
+            return
 
-print(2)
+        if user.mention in slots.values():
+            await interaction.response.send_message("❌ Вы уже записаны!", ephemeral=True)
+            return
+
+        slots[self.number] = user.mention
+        await update_message(interaction.message, slots)
+
+        await interaction.response.send_message(
+            f"✅ Вы записаны на {self.number})",
+            ephemeral=True
+        )
+
+
+class CancelButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="❌ Отменить запись",
+            style=discord.ButtonStyle.danger
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        bot: CollBot = interaction.client
+        slots = bot.registered_slots.get(interaction.message.id)
+        user = interaction.user
+
+        removed = False
+
+        for key in slots:
+            if slots[key] == user.mention:
+                slots[key] = None
+                removed = True
+
+        if not removed:
+            await interaction.response.send_message("❌ Вы не были записаны.", ephemeral=True)
+            return
+
+        await update_message(interaction.message, slots)
+        await interaction.response.send_message("✅ Запись отменена!", ephemeral=True)
+
+
+class CloseButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="🔒 Закрыть",
+            style=discord.ButtonStyle.secondary
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await close_coll(interaction.message)
+
+
+# ===========================
+# ✅ ОБНОВЛЕНИЕ СООБЩЕНИЯ
+# ===========================
+async def update_message(message, slots):
+    lines = "\n".join(f"{i}) {slots[i] or ''}" for i in slots)
+
+    new_text = (
+        message.content.split("ЗАПОЛНЯЕМ")[0] +
+        "ЗАПОЛНЯЕМ РОЛИ:\n\n" +
+        lines
+    )
+
+    await message.edit(content=new_text)
+
+
+# ===========================
+# ✅ ЗАКРЫТИЕ + ПИНГ ВСЕХ
+# ===========================
+async def close_coll(message):
+    bot: CollBot = message.channel.guild._state._get_client()
+
+    slots = bot.registered_slots.get(message.id)
+    if not slots:
+        return
+
+    mentions = [v for v in slots.values() if v]
+
+    ping_text = " ".join(mentions) if mentions else "Никто не записался."
+
+    await message.edit(view=None)
+    await message.reply(f"✅ Сбор закрыт!\n{ping_text}")
+
+    bot.registered_slots.pop(message.id, None)
+
+
+# ===========================
+# ✅ АВТОТАЙМЕР ЗАКРЫТИЯ
+# ===========================
+async def auto_close(message, seconds):
+    await asyncio.sleep(seconds)
+    await close_coll(message)
+
+
+# ===========================
+# ✅ ОТПРАВКА КОЛЛА
+# ===========================
+async def send_coll(ctx, channel_name: str, answers: dict):
+    guild = ctx.guild
+    timer = answers["timer"]
+    where = answers["where"]
+    howmany = int(answers["howmany"])
+
+    timer_category = discord.utils.get(guild.categories, name="таймера")
+    timer_channel = discord.utils.get(timer_category.text_channels, name=channel_name)
+
+    await timer_channel.send(f"Колл {ctx.author.mention} → {timer}")
+
+    user_category = discord.utils.get(guild.categories, name=timer)
+    user_channel = discord.utils.get(user_category.text_channels, name=channel_name)
+
+    slots = {i: None for i in range(1, howmany + 1)}
+
+    text = (
+        f"### Новый колл от {ctx.author.mention}\n"
+        f"**Время:** {timer}\n"
+        f"**Куда:** {where}\n\n"
+        f"ЗАПОЛНЯЕМ РОЛИ\n\n" +
+        "\n".join(f"{i})" for i in slots)
+    )
+
+    message = await user_channel.send(text)
+
+    bot.registered_slots[message.id] = slots
+
+    view = SlotView(bot, message.id, howmany)
+    await message.edit(view=view)
+
+    # ✅ АВТОЗАКРЫТИЕ ЧЕРЕЗ 5 МИНУТ (300 сек)
+    asyncio.create_task(auto_close(message, 300))
+
+
+# ===========================
+# ✅ КОМАНДА
+# ===========================
+@bot.slash_command(name="create_coll", description="Создать колл", guild_ids=guild_ids)
+async def create_coll(ctx):
+    answers = {
+        "timer": "18",
+        "where": "Статик",
+        "howmany": "5"
+    }
+
+    await ctx.respond("✅ Колл создан!")
+    await send_coll(ctx, "сбор", answers)
+
+
+# ===========================
+# ✅ ЗАПУСК
+# ===========================
+@bot.event
+async def on_ready():
+    print(f"✅ Бот запущен: {bot.user}")
+
+
 bot.run(TOKEN)
